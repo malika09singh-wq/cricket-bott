@@ -227,13 +227,23 @@ def is_international_text_check(text):
         if re.search(abbrev, title):
             return True
 
-    if any(x in title for x in [" U19", "TROPHY", "LEAGUE", " XI", "INDIA A", "PAKISTAN A", "ENGLAND LIONS", "HONG KONG", "CHINA"]):
+    # Exclude junior, A-team and truly domestic/non-international events.
+    # NOTE: "TROPHY" removed intentionally — ICC Champions Trophy / World Cup
+    # titles also contain "TROPHY" and must NOT be excluded here.
+    # Domestic trophy matches (Ranji, Vijay Hazare, etc.) won't have 2+ country
+    # names in the first place, so they are caught by the countries check below.
+    if any(x in title for x in [" U19", " U-19", "LEAGUE", " XI", "INDIA A", "PAKISTAN A",
+                                  "AUSTRALIA A", "SRI LANKA A", "ENGLAND LIONS",
+                                  "HONG KONG", "CHINA"]):
         return False
-    
+
+    # International matches — require at least 2 full ICC member country names.
+    # This handles bilateral series (T20I, ODI, Test) and ICC events automatically.
     countries = [
         "INDIA", "AUSTRALIA", "ENGLAND", "NEW ZEALAND", "SOUTH AFRICA",
         "PAKISTAN", "SRI LANKA", "WEST INDIES", "BANGLADESH", "ZIMBABWE",
-        "AFGHANISTAN", "IRELAND"
+        "AFGHANISTAN", "IRELAND", "SCOTLAND", "NETHERLANDS", "NAMIBIA",
+        "UNITED STATES", "CANADA", "KENYA", "NEPAL", "OMAN", "UAE"
     ]
     return sum(1 for c in countries if c in title) >= 2
 
@@ -248,7 +258,17 @@ def is_womens_match(match_name):
 def get_teams_from_name(match_name):
     teams = [t.strip() for t in re.split(r'\s+vs\s+|\s+v\s+', match_name, flags=re.IGNORECASE)]
     if len(teams) >= 2:
-        return teams[0], teams[1]
+        # Strip trailing series/match info so international names like
+        # "India vs England 3rd T20I" yield clean team names.
+        def _clean(t):
+            # Remove ", 3rd T20I" / " 1st ODI" / " Test" suffixes
+            t = re.sub(r'[,]?\s*\d*\s*(?:\d+(?:st|nd|rd|th)\s+)?(?:T20I|T20|ODI|Test|OD)\b.*$', '', t, flags=re.IGNORECASE)
+            # Also strip anything after a comma
+            t = re.sub(r',.*$', '', t)
+            return t.strip()
+        team_a = _clean(teams[0]) or teams[0]
+        team_b = _clean(teams[1]) or teams[1]
+        return team_a, team_b
     return "Team A", "Team B"
 
 # =====================
@@ -467,6 +487,17 @@ def scrape_instant_score(match_url):
         return "Error loading score"
 
 def fetch_toss_update(match_url, match_name):
+    m_id = match_url.split("/")[-2] if "/" in match_url else stable_event_suffix(match_name)
+
+    # --- Persistent check (survives bot restarts) ---
+    try:
+        db_row = cursor.execute("SELECT toss_done FROM state WHERE m_id=?", (m_id,)).fetchone()
+        if db_row and db_row[0] == 1:
+            return
+    except Exception:
+        pass
+
+    # --- In-memory check (fast path within a session) ---
     if match_url not in match_state:
         match_state[match_url] = {"toss_sent": False}
     if match_state[match_url]["toss_sent"]:
@@ -488,6 +519,18 @@ def fetch_toss_update(match_url, match_name):
             return
         toss_text = toss_label.find_next("div").get_text(strip=True)
         match_state[match_url]["toss_sent"] = True
+
+        # Persist to DB so bot doesn't re-send toss on restart
+        try:
+            cursor.execute(
+                """INSERT INTO state (m_id, last_over, last_wickets, toss_done, last_wicket_over, innings, last_double_strike_wk, last_score)
+                   VALUES (?, 0, 0, 1, -10.0, 1, 0, 0)
+                   ON CONFLICT(m_id) DO UPDATE SET toss_done = 1""",
+                (m_id,)
+            )
+            conn.commit()
+        except Exception as db_exc:
+            logger.warning("fetch_toss_update DB persist failed: %s", db_exc)
 
         msg = f"🪙 *TOSS UPDATE* 🪙\n—————————————————\n🏆 *{match_name}*\n\n🏟 *{toss_text}*\n\n🖼 [Tap for Toss Photos]({get_img_link(match_name + ' Toss')})\n—————————————————\n🏏 _Match starting soon! Get ready!_"
         
@@ -598,14 +641,24 @@ def fetch_match_update(match_url, match_name):
             last_score = 0
             current_innings = 2
 
+        # In 2nd innings the batting/bowling teams swap.
+        # Pass the correct fallback defaults so get_live_teams uses the right team
+        # even if the live HTML scraping fails.
+        if current_innings == 2:
+            default_bat, default_bowl = team_b, team_a
+        else:
+            default_bat, default_bowl = team_a, team_b
+
         # Ask Cricbuzz directly who is batting right now
-        team_batting, team_bowling = get_live_teams(soup, team_a, team_b)
+        team_batting, team_bowling = get_live_teams(soup, default_bat, default_bowl)
 
         score_display = f"{team_batting} {runs}/{wickets}" if team_batting else f"{runs}/{wickets}"
 
         is_innings_break = (wickets == 10 and not is_match_over) or any(
-            phrase in status_lower for phrase in ["innings break", "target", "stumps", "lunch", "tea"]
+            phrase in status_lower for phrase in ["innings break", "target"]
         )
+        # Test match day/session breaks — NOT an innings completion
+        is_test_break = any(phrase in status_lower for phrase in ["stumps", "lunch", "tea", "drinks"])
 
         # 5. GET COMMENTARY
         commentary_text = ""
@@ -672,6 +725,16 @@ def fetch_match_update(match_url, match_name):
                 cursor.execute("INSERT INTO events VALUES (?)", (eid,))
                 messages_to_send.append((msg, match_facts.copy()))
 
+        if is_test_break:
+            eid = f"{m_id}_BREAK_{stable_event_suffix(status_text)}"
+            if not cursor.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
+                break_icons = {"stumps": "🌙", "lunch": "🍽️", "tea": "☕", "drinks": "💧"}
+                break_icon = next((v for k, v in break_icons.items() if k in status_lower), "⏸️")
+                match_facts["event_type"] = "TEST_BREAK"
+                msg = f"{break_icon} *MATCH BREAK* {break_icon}\n—————————————————\n🏏 *{match_name}*\n\n📊 *SCORE:* *{score_display}* ({overs_raw})\n⏸️ _{status_text}_\n—————————————————\n🔔 _Play resumes shortly._"
+                cursor.execute("INSERT INTO events VALUES (?)", (eid,))
+                messages_to_send.append((msg, match_facts.copy()))
+
         if "timeout" in event_lower and "strategic" in event_lower:
             eid = f"{m_id}_TIMEOUT_{int(cur_overs)}"
             if not cursor.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
@@ -709,7 +772,7 @@ def fetch_match_update(match_url, match_name):
                     cursor.execute("INSERT INTO events VALUES (?)", (eid,))
                     messages_to_send.append((msg, match_facts.copy()))
             
-            elif last_wk_ov > 0 and abs(cur_balls - overs_to_balls(last_wk_ov)) <= 6 and wickets >= last_double_strike_wk + 2:
+            elif last_wk_ov >= 0 and abs(cur_balls - overs_to_balls(last_wk_ov)) <= 6 and wickets >= last_double_strike_wk + 2:
                 eid = f"{m_id}_DOUBLE_STRIKE_{wickets}"
                 if not cursor.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
                     match_facts["event_type"] = "DOUBLE_WICKET"
