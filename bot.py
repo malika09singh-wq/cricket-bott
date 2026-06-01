@@ -171,7 +171,7 @@ STRICT CURRENT FACTS TO USE:
 
 RULES:
 1. Exactly 1 Heading and 2 narrative paragraphs.
-2. IMPORTANT: Use a double newline (\\n\\n) between paragraphs.
+2. IMPORTANT: Separate the heading and each paragraph with a blank line.
 3. Total Length: 3-4 sentences across both paragraphs.
 4. TONE INSTRUCTION: {custom_instruction if custom_instruction else "Make the summary engaging and analytical based on the current score."}
 5. STRICT: If 'Current Innings' is 2, DO NOT mention who won the toss in your summary. Focus ONLY on the chase and the team currently batting.
@@ -188,7 +188,7 @@ RULES:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": 140,   # Room for heading + 2 narrative paragraphs
+        "max_tokens": 200,   # Room for heading + 2 narrative paragraphs
         "top_p": 0.9,
     }
 
