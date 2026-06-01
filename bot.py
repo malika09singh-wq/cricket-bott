@@ -142,43 +142,53 @@ def get_pro_edit(match_facts):
                 "momentum shift towards the bowling side."
             )
 
-    prompt = (
-        "You are a cricket channel editor for a premium WhatsApp channel.\n"
-        "Write a SHORT, PUNCHY post using ONLY the facts provided below.\n\n"
-        "STYLE (mirror exactly):\n"
-        "Heading: \"🏏 POWERPLAY END – IND vs AUS 🏏\"\n"
-        "Body: \"India raced to 58/2, with Rohit (34*) dominant throughout. "
-        "Two late wickets pegged them back, but the platform is set.\"\n\n"
-        f"TONE: {custom_instruction if custom_instruction else 'Be sharp, direct and analytical.'}\n\n"
-        "STRICT FACTS (use ONLY these — never invent stats):\n"
-        f"- Match: {match_facts.get('match_name', 'Unknown')}\n"
-        f"- Event: {event_type}\n"
-        f"- Batting: {match_facts.get('team_batting', 'Unknown')}  "
-        f"| Bowling: {match_facts.get('team_bowling', 'Unknown')}\n"
-        f"- Score: {match_facts.get('score_display', 'Unknown')}  "
-        f"| Innings: {match_facts.get('innings', 1)}\n"
-        f"- Status/Commentary: {match_facts.get('status_text', '')}\n\n"
-        "RULES:\n"
-        "1. One heading line, then exactly 2 sentences. Total post ≤ 50 words.\n"
-        "2. Blank line (\\n\\n) between heading and body.\n"
-        "3. Innings 2 → focus on the chase only, never mention the toss.\n"
-        "4. Never invent stats."
-    )
+    prompt = f"""You are a professional Cricket News Editor for a premium WhatsApp channel.
+Rewrite the raw match data into a CRISP, EXCITING NARRATIVE post.
+
+YOUR OUTPUT MUST MIRROR THE TONE AND STRUCTURE OF THESE EXAMPLES:
+
+EXAMPLE 1 (Toss):
+🏏 TOSS UPDATE – ENG vs SL 🏏
+Sri Lanka have won the toss and elected to bowl first in their Super 8 opener at the Pallekele International Cricket Stadium.
+
+A massive game in Group 2 to kick off the business end. The Lankan Lions will look to exploit the early moisture on a surface that promises plenty of turn. Game on!
+
+EXAMPLE 2 (Match Update):
+🏏 10 OVER UPDATE – ENG vs SL 🏏
+England find themselves in a tough spot, reaching 68/4 after 10 overs in their Super 8 opener.
+
+Phil Salt (37*) is leading a lone fightback, but Sri Lanka's spinners have dominated, including the massive wicket of captain Harry Brook (14) right at the 10-over mark. The middle order needs to stabilize quickly or risk a complete collapse.
+
+---
+STRICT CURRENT FACTS TO USE:
+- Match: {match_facts.get('match_name', 'Unknown')}
+- Event: {event_type}
+- Batting Team (The team currently playing the balls): {match_facts.get('team_batting', 'Unknown')}
+- Bowling Team: {match_facts.get('team_bowling', 'Unknown')}
+- Current Innings: {match_facts.get('innings', 1)}
+- Score: {match_facts.get('score_display', 'Unknown')}
+- Official Status / Commentary: {match_facts.get('status_text', '')}
+
+RULES:
+1. Exactly 1 Heading and 2 narrative paragraphs.
+2. IMPORTANT: Use a double newline (\\n\\n) between paragraphs.
+3. Total Length: 3-4 sentences across both paragraphs.
+4. TONE INSTRUCTION: {custom_instruction if custom_instruction else "Make the summary engaging and analytical based on the current score."}
+5. STRICT: If 'Current Innings' is 2, DO NOT mention who won the toss in your summary. Focus ONLY on the chase and the team currently batting.
+6. NEVER invent stats not provided in the 'STRICT CURRENT FACTS' above.
+"""
 
     data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "You are an elite cricket news editor. "
-                    "Mirror the user's style guide exactly and vary tone by event context."
-                ),
+                "content": "You are an elite cricket news editor who mirrors the user's specific writing style examples perfectly. You change your tone based on the context of the game.",
             },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": 140,   # Tight ceiling keeps posts punchy
+        "max_tokens": 140,   # Room for heading + 2 narrative paragraphs
         "top_p": 0.9,
     }
 
