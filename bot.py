@@ -18,7 +18,13 @@ BOT_TOKEN    = os.getenv("BOT_TOKEN")
 CHAT_ID      = os.getenv("CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+}
 IST     = timezone(timedelta(hours=5, minutes=30))
 
 RESULT_PHRASES = [
@@ -208,13 +214,15 @@ RULES:
 def send_telegram(raw_text, pro_edit=False, match_facts=None):
     """
     Send a Telegram message to the configured channel.
-    If pro_edit=True and Groq is available, follow up with an AI-polished version.
+    Always sends the raw message first (acts as fallback if AI glitches),
+    then follows up with the AI-polished version if pro_edit=True.
     """
     if not raw_text or not BOT_TOKEN or not CHAT_ID:
         return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
+    # Always send raw first
     try:
         requests.post(
             url,
@@ -229,6 +237,7 @@ def send_telegram(raw_text, pro_edit=False, match_facts=None):
     except requests.RequestException as exc:
         logger.warning("send_telegram raw failed: %s", exc)
 
+    # Then follow up with AI version if available
     if pro_edit and GROQ_API_KEY and match_facts:
         ai_text = get_pro_edit(match_facts)
         if ai_text:
@@ -254,8 +263,8 @@ def get_img_link(query):
 
 
 def overs_to_balls(overs):
-    """Convert decimal overs string '14.3' to total balls (87)."""
-    if not overs:
+    """Convert decimal overs '14.3' (or float 14.3) to total balls (87)."""
+    if not overs and overs != 0:
         return 0
     m = re.match(r"^(\d+)(?:\.(\d))?$", str(overs).strip())
     if not m:
@@ -413,10 +422,12 @@ def handle_daily_briefing():
         row = cursor.execute("SELECT date FROM daily_logs WHERE date=?", (today_date,)).fetchone()
         if not row:
             brief = scrape_todays_schedule()
-            if brief:
+            # Only send if there are actual matches — don't spam "no matches today"
+            if brief and brief != "No major matches scheduled for today.":
                 send_telegram(brief)
-                cursor.execute("INSERT INTO daily_logs (date) VALUES (?)", (today_date,))
-                conn.commit()
+            # Always mark as done so we don't retry every 15s all day
+            cursor.execute("INSERT INTO daily_logs (date) VALUES (?)", (today_date,))
+            conn.commit()
 
 
 def _command_matches(text, command):
@@ -449,7 +460,20 @@ def handle_commands():
                 continue
             text = msg_data.get("text", "")
 
-            if _command_matches(text, "/tracklist"):
+            if _command_matches(text, "/help"):
+                send_telegram(
+                    "🏏 *CRICKET BOT – COMMANDS*\n"
+                    "—————————————————\n"
+                    "*/tracklist* — Show all live matches & tracking status\n"
+                    "*/track <n>* — Start tracking match number n\n"
+                    "*/stop <n>* — Mute match number n\n"
+                    "*/score* — Get current live scores\n"
+                    "*/help* — Show this message\n"
+                    "—————————————————\n"
+                    "_Women's matches are muted by default. Use /track to enable._"
+                )
+
+            elif _command_matches(text, "/tracklist"):
                 matches = scrape_match_links()
                 if not matches:
                     send_telegram("📭 No LIVE matches found right now.")
@@ -524,6 +548,7 @@ def scrape_match_links():
         )
         soup    = BeautifulSoup(res.text, "html.parser")
         matches = []
+        seen    = set()  # O(1) dedup instead of O(n²) list scan
 
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
@@ -533,7 +558,8 @@ def scrape_match_links():
             if not name or not is_international_text_check(name):
                 continue
             full_link = ("https://www.cricbuzz.com" + href) if href.startswith("/") else href
-            if not any(full_link == m[1] for m in matches):
+            if full_link not in seen:
+                seen.add(full_link)
                 matches.append((name, full_link))
         return matches
     except Exception as e:
@@ -1054,6 +1080,7 @@ def fetch_match_update(match_url, match_name):
                     messages_to_send.append((msg, match_facts.copy()))
 
             last_wk_ov = new_wk_ov
+            last_wk    = wickets  # ← BUG FIX: keep in sync so next poll doesn't re-fire
 
         # ══════════════════════════════════════════════════════════════════
         # 📊 OVER MILESTONES
@@ -1083,7 +1110,7 @@ def fetch_match_update(match_url, match_name):
                 break
 
         if passed_m:
-            eid = f"{m_id}_OV_{passed_m}_{runs}_{current_innings}"
+            eid = f"{m_id}_OV_{passed_m}_{current_innings}"  # ← BUG FIX: removed runs from EID
             if not cursor.execute("SELECT 1 FROM events WHERE id=?", (eid,)).fetchone():
                 crr = f"{(runs / cur_overs):.2f}" if cur_overs else "N/A"
 
