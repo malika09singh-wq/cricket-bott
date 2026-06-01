@@ -178,7 +178,7 @@ def get_pro_edit(match_facts):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": 100,   # Tight ceiling keeps posts punchy
+        "max_tokens": 140,   # Tight ceiling keeps posts punchy
         "top_p": 0.9,
     }
 
